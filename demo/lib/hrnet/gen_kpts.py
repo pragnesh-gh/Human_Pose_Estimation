@@ -41,7 +41,7 @@ def parse_args():
                         help='The model directory')
     parser.add_argument('--det-dim', type=int, default=416,
                         help='The input dimension of the detected image')
-    parser.add_argument('--thred-score', type=float, default=0.30,
+    parser.add_argument('--thred-score', type=float, default=0.10,
                         help='The threshold of object Confidence')
     parser.add_argument('-a', '--animation', action='store_true',
                         help='output animation')
@@ -100,6 +100,14 @@ def gen_video_kpts(video, det_dim=416, num_peroson=1, gen_output=False):
 
     kpts_result = []
     scores_result = []
+
+    # ---------------------------------------------------------------
+    # Initialise fallback boxes so we can reuse them if the very
+    # first frame has *no* detections (prevents UnboundLocalError)
+    # ---------------------------------------------------------------
+    bboxs_pre  = np.empty((0, 4), dtype=np.float32)
+    scores_pre = np.empty((0,),  dtype=np.float32)
+    # ---------------------------------------------------------------
     for ii in tqdm(range(video_length)):
         ret, frame = cap.read()
 

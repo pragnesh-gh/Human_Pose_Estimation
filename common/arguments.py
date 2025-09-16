@@ -77,13 +77,59 @@ def parse_args():
     parser.add_argument('--viz-limit', type=int, default=-1, metavar='N', help='only render first N frames')
     parser.add_argument('--viz-downsample', type=int, default=1, metavar='N', help='downsample FPS by a factor N')
     parser.add_argument('--viz-size', type=int, default=5, metavar='N', help='image size')
-    
+
+    # Demo: Image or Video
+    group = parser.add_mutually_exclusive_group(required=False)  # was True -> can break training
+    group.add_argument('--video', type=str, default=None, help='Path to an input video file')
+    group.add_argument('--image', type=str, default=None, help='Path to a single input image (jpg/png).')
+    group.add_argument('--image-dir', type=str, default=None, help='Path to a folder of input images.')
+
+    # --- Orientation (torso) estimation flags:
+    orient = parser.add_argument_group("Torso Orientation")
+    orient.add_argument("--estimate-orientation",action="store_true",
+        help="Enable torso orientation estimation from 3D joints (off by default).",
+    )
+    orient.add_argument(
+        "--orientation-layout",type=str, default="h36m", choices=["h36m", "coco17"],
+        help="Joint layout for orientation computation. Default: h36m.",
+    )
+    orient.add_argument("--orientation-alpha",type=float,default=0.20,
+        help="SLERP-EMA smoothing factor in [0,1]. Higher=more reactive. Default: 0.20.",
+    )
+    orient.add_argument("--orientation-conf-min",type=float,default=0.35,
+        help="Min confidence to accept/use orientation (overlay/save). Default: 0.35.",
+    )
+    orient.add_argument("--orientation-overlay",action="store_true",
+        help="Draw torso axes (forward/right/up) in visualization when confidence is high.",
+    )
+    orient.add_argument(
+        "--orientation-overlay-scale",type=float,default=150.0,
+        help="Axis triad length for overlay (renderer units). Default: 150.0.",
+    )
+    orient.add_argument(
+        "--orientation-save",type=str,default=None,
+        help="Optional path to save per-frame orientation (CSV or JSON inferred by extension).",
+    )
+
     parser.set_defaults(bone_length_term=True)
     parser.set_defaults(data_augmentation=True)
     parser.set_defaults(test_time_augmentation=True)
     # parser.set_defaults(test_time_augmentation=False)
 
     args = parser.parse_args()
+
+    # Demo vs legacy viz flags: prevent ambiguity
+    if args.video and args.viz_video:
+        print("Invalid flags: --video and --viz-video cannot be used together. Use only one.")
+        exit()
+
+    # Orientation save extension check (optional but helpful)
+    if args.orientation_save is not None and not (
+            args.orientation_save.endswith('.csv') or args.orientation_save.endswith('.json')):
+        print("Invalid --orientation-save: only .csv or .json are supported.")
+        exit()
+
+
     # Check invalid configuration
     if args.resume and args.evaluate:
         print('Invalid flags: --resume and --evaluate cannot be set at the same time')
@@ -92,5 +138,7 @@ def parse_args():
     if args.export_training_curves and args.no_eval:
         print('Invalid flags: --export-training-curves and --no-eval cannot be set at the same time')
         exit()
+
+
 
     return args
