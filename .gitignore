@@ -1,2 +1,15 @@
 __pycache__/
 .DS_Store
+checkpoint/
+demo/image
+demo/lib
+demo/output
+demo/video
+demo/pose_pipeline.py
+demo/pose_pipeline_signleFrame.py
+demo/yolov8n.pt
+images/
+single_frame.ipynb
+yolov8n.pt
+vectors_and_angles.csv
+
