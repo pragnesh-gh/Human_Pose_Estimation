@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import os
+POSE_DEBUG = os.getenv("POSE_DEBUG", "0") != "0"
 
 h36m_coco_order = [9, 11, 14, 12, 15, 13, 16, 4, 1, 5, 2, 6, 3]
 coco_order = [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -38,6 +39,9 @@ def coco_h36m(keypoints):
 
 
 def h36m_coco_format(keypoints, scores):
+    if POSE_DEBUG:
+        print(f"[PRE.DBG] h36m_coco_format: in keypoints={keypoints.shape}, scores={scores.shape}")
+
     assert len(keypoints.shape) == 4 and len(scores.shape) == 3
 
     h36m_kpts = []
@@ -65,6 +69,11 @@ def h36m_coco_format(keypoints, scores):
 
     h36m_kpts = np.asarray(h36m_kpts, dtype=np.float32)
     h36m_scores = np.asarray(h36m_scores, dtype=np.float32)
+
+    if POSE_DEBUG:
+        vf_lens = [len(v) for v in valid_frames]
+        print(f"[PRE.DBG] h36m_coco_format: out kpts={h36m_kpts.shape}, scores={h36m_scores.shape}, "
+              f"people={len(valid_frames)}, valid_frames_len={vf_lens[:5]}{'...' if len(vf_lens) > 5 else ''}")
 
     return h36m_kpts, h36m_scores, valid_frames
 
@@ -99,6 +108,9 @@ def revise_kpts(h36m_kpts, h36m_scores, valid_frames):
                 continue
 
         new_h36m_kpts[index, frames] = kpts
+
+    if POSE_DEBUG:
+        print(f"[PRE.DBG] revise_kpts: in={h36m_kpts.shape} → out={new_h36m_kpts.shape}")
 
     return new_h36m_kpts
 
