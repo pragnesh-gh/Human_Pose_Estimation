@@ -7,6 +7,9 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+POSE_DEBUG = os.getenv("POSE_DEBUG", "0") != "0"
+
+
 try:
     from common.orientation import compute_torso_frame, smooth_quat
 except ModuleNotFoundError:
@@ -55,8 +58,14 @@ import matplotlib.gridspec as gridspec
 plt.switch_backend('agg')
 matplotlib.rcParams['pdf.fonttype'] = 42
 matplotlib.rcParams['ps.fonttype'] = 42
+# suppress warnings while we ALSO properly close figures everywhere
+matplotlib.rcParams['figure.max_open_warning'] = 0
 
 def show2Dpose(kps, img):
+    # Expect a single frame worth of 2D keypoints (17 joints, x/y)
+    if not (isinstance(kps, np.ndarray) and kps.shape == (17, 2)):
+        raise ValueError(f"show2Dpose expected kps shape (17,2), got {getattr(kps, 'shape', None)}")
+
     connections = [[0, 1], [1, 2], [2, 3], [0, 4], [4, 5],
                    [5, 6], [0, 7], [7, 8], [8, 9], [9, 10],
                    [8, 11], [11, 12], [12, 13], [8, 14], [14, 15], [15, 16]]
@@ -67,14 +76,14 @@ def show2Dpose(kps, img):
     rcolor = (0, 0, 255)
     thickness = 3
 
-    for j,c in enumerate(connections):
-        start = map(int, kps[c[0]])
-        end = map(int, kps[c[1]])
-        start = list(start)
-        end = list(end)
-        cv2.line(img, (start[0], start[1]), (end[0], end[1]), lcolor if LR[j] else rcolor, thickness)
-        cv2.circle(img, (start[0], start[1]), thickness=-1, color=(0, 255, 0), radius=3)
-        cv2.circle(img, (end[0], end[1]), thickness=-1, color=(0, 255, 0), radius=3)
+    for j, (a, b) in enumerate(connections):
+        p0 = np.asarray(kps[a], dtype=np.int32).ravel()
+        p1 = np.asarray(kps[b], dtype=np.int32).ravel()
+        start = (int(p0[0]), int(p0[1]))
+        end = (int(p1[0]), int(p1[1]))
+        cv2.line(img, start, end, lcolor if LR[j] else rcolor, thickness)
+        cv2.circle(img, start, radius=3, color=(0, 255, 0), thickness=-1)
+        cv2.circle(img, end, radius=3, color=(0, 255, 0), thickness=-1)
 
     return img
 
@@ -225,6 +234,8 @@ def get_pose2D(source_path, output_dir):
             reconstruction=re_kpts,       # aligned to full video length
             valid_mask=valid_mask         # 1 = person present on that frame
         )
+        if POSE_DEBUG:
+            print(f"[2D.DBG] Saved {output_npz}: T={re_kpts.shape[1]}, valid_sum={int(valid_mask.sum())}")
         _dbg("Saved 2D keypoints", output_npz=output_npz)
     except Exception as e:
         # If post-HRNet formatting fails for an empty/odd case, fall back too
@@ -241,20 +252,29 @@ def img2video(video_path, output_dir):
     cap = cv2.VideoCapture(video_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     if fps <= 0:
-        fps = 25  # fallback for single images
+        fps = 25  # fallback
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
     names = sorted(glob.glob(os.path.join(output_dir + 'pose/', '*.png')))
-    img = cv2.imread(names[0])
-    size = (img.shape[1], img.shape[0])
+    if not names:
+        _dbg("img2video: no pose frames found", dir=output_dir + 'pose/')
+        return
 
-    videoWrite = cv2.VideoWriter(output_dir + source_name + '.mp4', fourcc, fps, size) #was video_name instead of source_name
+    img0 = cv2.imread(names[0])
+    size = (img0.shape[1], img0.shape[0])
+
+    source_name = os.path.splitext(os.path.basename(video_path))[0]
+    out_path = os.path.join(output_dir, f"{source_name}.mp4")
+    vw = cv2.VideoWriter(out_path, fourcc, fps, size)
 
     for name in names:
-        img = cv2.imread(name)
-        videoWrite.write(img)
+        frame = cv2.imread(name)
+        vw.write(frame)
 
-    videoWrite.release()
+    vw.release()
+    cap.release()
+    _dbg("img2video: wrote", path=out_path, fps=fps, nframes=len(names))
+
 
 
 def showimage(ax, img):
@@ -270,7 +290,6 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
 
     if args is None:
         class Dummy: pass
-
         args = Dummy()
     args.embed_dim_ratio, args.depth, args.frames = 32, 4, 243
     args.number_of_kept_frames, args.number_of_kept_coeffs = 27, 27
@@ -280,8 +299,7 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
 
     ## Reload
     model = nn.DataParallel(Model(args=args)).cuda()
-
-    model_dict = model.state_dict()
+    # model_dict = model.state_dict()
     # Put the pretrained model of PoseFormerV2 in 'checkpoint/']
     model_path = sorted(glob.glob(os.path.join(args.previous_dir, '27_243_45.2.bin')))[0]
     _dbg("Model & checkpoint", model_path=model_path)
@@ -295,7 +313,6 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
     _npz = np.load(output_dir + 'input_2D/keypoints.npz', allow_pickle=True)
     keypoints = _npz['reconstruction']
     valid_mask = _npz['valid_mask'] if 'valid_mask' in _npz.files else None  # 1=person present
-    # --- NEW END ---
 
     # source handling
     if is_image:
@@ -306,6 +323,12 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
     else:
         cap = cv2.VideoCapture(video_path)
         video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if POSE_DEBUG:
+        kp_T = keypoints.shape[1]
+        print(f"[3D.DBG] video_len={video_length}, keypoints_T={kp_T}, "
+              f"valid_mask_len={(len(valid_mask) if valid_mask is not None else 'None')}")
+
     # --- NEW: cache base frame size & last good frame for robust timeline ---
     if not is_image:
         base_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
@@ -314,14 +337,12 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
         base_h, base_w = img0.shape[:2]
     if base_w <= 0 or base_h <= 0:
         base_w, base_h = 640, 480  # safe fallback
-    last_valid_img = None
+    # last_valid_img = None
 
     # --- Orientation buffers (only used if enabled) ---
     orientation_rows = []
     prev_quat = None
-    # --- NEW: remember previous 3D pose to hold-through gaps ---
-    prev_post_out = None
-    # --- NEW END ---
+    prev_post_out = None # remember previous 3D pose to hold-through gaps
 
     ## 3D
     print('\nGenerating 3D pose...')
@@ -331,14 +352,20 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
             img = img0
         else:
             ret, img = cap.read()
-            if img is None:
-                continue
-        img_size = img.shape
+            if not ret or img is None:
+                if POSE_DEBUG:
+                    print(f"[3D.DBG] Frame {i}: cap.read() failed")
+                # still produce empty outputs to keep timeline
+                img = np.zeros((base_h, base_w, 3), dtype=np.uint8)
+        # img_size = img.shape
 
-        # --- NEW: decide if this frame has a person (avoid “speed-up” on gaps) ---
+        # --- decide if this frame has a person (avoid “speed-up” on gaps) ---
         has_person = True
         if valid_mask is not None and i < len(valid_mask):
             has_person = bool(valid_mask[i])
+        elif valid_mask is not None and i >= len(valid_mask):
+            # if keypoints shorter than video (should not happen after patch), treat as no person
+            has_person = False
         # --- NEW END ---
 
         ## input frames
@@ -356,41 +383,43 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
 
             input_2D_no = np.pad(input_2D_no, ((left_pad, right_pad), (0, 0), (0, 0)), 'edge')
 
-        joints_left = [4, 5, 6, 11, 12, 13]
-        joints_right = [1, 2, 3, 14, 15, 16]
+        if POSE_DEBUG:
+            print(f"[3D.DBG] Frame {i}: has_person={has_person} win=[{start},{end}] padL={left_pad} padR={right_pad}")
+
+
 
         # --- NEW: if no person, skip model forward; save raw 2D and held 3D ---
         if not has_person:
-            # 2D: save raw frame (no overlay)
+            # Save plain 2D frame (no overlay)
             output_dir_2D = output_dir + 'pose2D/'
             os.makedirs(output_dir_2D, exist_ok=True)
-            cv2.imwrite(output_dir_2D + str(('%04d' % i)) + '_2D.png', img)
+            cv2.imwrite(output_dir_2D + f"{i:04d}_2D.png", img)
 
-            # 3D: hold last pose if available; else empty skeleton
-            if prev_post_out is not None:
-                post_out = prev_post_out
-            else:
-                post_out = np.zeros((17, 3), dtype=np.float32)
-
+            # Hold last 3D pose or zeros
+            post_out = prev_post_out if prev_post_out is not None else np.zeros((17, 3), dtype=np.float32)
             fig = plt.figure(figsize=(9.6, 5.4))
-            gs = gridspec.GridSpec(1, 1)
+            gs = gridspec.GridSpec(1, 1);
             gs.update(wspace=-0.00, hspace=0.05)
             ax = plt.subplot(gs[0], projection='3d')
             show3Dpose(post_out, ax)
-
             output_dir_3D = output_dir + 'pose3D/'
             os.makedirs(output_dir_3D, exist_ok=True)
-            plt.savefig(output_dir_3D + str(('%04d' % i)) + '_3D.png', dpi=200, format='png', bbox_inches='tight')
-            plt.clf()
+            plt.savefig(output_dir_3D + f"{i:04d}_3D.png", dpi=200, format='png', bbox_inches='tight')
+            plt.clf();
             plt.close(fig)
-            # (no orientation overlay on empty frames)
             continue
-        # --- NEW END ---
+        # Center frame's 2D in pixels for overlay
+        overlay_2D_px = input_2D_no[args.pad]
 
         # input_2D_no += np.random.normal(loc=0.0, scale=5, size=input_2D_no.shape)
-        input_2D = normalize_screen_coordinates(input_2D_no, w=img_size[1], h=img_size[0])
+        # 1) temporal window is already built: input_2D_no (243,17,2) in *pixel* coords
+        input_2D = normalize_screen_coordinates(input_2D_no, w=img.shape[1], h=img.shape[0])
 
-        input_2D_aug = copy.deepcopy(input_2D)
+        # 2) flipped copy in 2D (exactly once) + swap left/right joints
+        joints_left = [4, 5, 6, 11, 12, 13]
+        joints_right = [1, 2, 3, 14, 15, 16]
+
+        input_2D_aug = input_2D.copy()
         input_2D_aug[:, :, 0] *= -1
         input_2D_aug[:, joints_left + joints_right] = input_2D_aug[:, joints_right + joints_left]
         input_2D = np.concatenate((np.expand_dims(input_2D, axis=0), np.expand_dims(input_2D_aug, axis=0)), 0)
@@ -403,7 +432,7 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
         _dbg("Loaded input_2D", npz_path=output_dir + 'input_2D/keypoints.npz',
              shape=np.load(output_dir + 'input_2D/keypoints.npz', allow_pickle=True)['reconstruction'].shape)
 
-        N = input_2D.size(0)
+        # N = input_2D.size(0)
 
         ## estimation
         output_3D_non_flip = model(input_2D[:, 0])
@@ -417,23 +446,37 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
 
         output_3D[:, :, 0, :] = 0
         post_out = output_3D[0, 0].cpu().detach().numpy()
-        # --- NEW: remember for gap frames ---
-        prev_post_out = post_out
-        # --- NEW END ---
+        prev_post_out = post_out #remember for gap frames
 
-        rot = [0.1407056450843811, -0.1500701755285263, -0.755240797996521, 0.6223280429840088]
-        rot = np.array(rot, dtype='float32')
+        rot = np.array([0.1407056450843811, -0.1500701755285263, -0.755240797996521, 0.6223280429840088],dtype='float32')
         post_out = camera_to_world(post_out, R=rot, t=0)
         post_out[:, 2] -= np.min(post_out[:, 2])
 
-        input_2D_no = input_2D_no[args.pad]
+        # input_2D_no = input_2D_no[args.pad]
+
+        overlay_src_idx = min(i, keypoints.shape[1] - 1)
+        overlay_2D_px = keypoints[0, overlay_src_idx]  # shape (17, 2)
+
+        # Frame timing introspection from OpenCV
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) if not is_image else 0.0
+        pos_ms = float(cap.get(cv2.CAP_PROP_POS_MSEC)) if not is_image else 0.0
+        est_ms = (i / fps * 1000.0) if (not is_image and fps > 0) else 0.0
+
+        if POSE_DEBUG:
+            print(
+                "[SYNC.DBG] "
+                f"i={i} start={start} end={end} padL={left_pad} padR={right_pad} "
+                f"overlay_src_idx={overlay_src_idx} "
+                f"pos_ms={pos_ms:.2f} est_ms={est_ms:.2f} fps={fps:.2f}"
+            )
 
         ## 2D
-        image = show2Dpose(input_2D_no, copy.deepcopy(img))
+        image = show2Dpose(overlay_2D_px, copy.deepcopy(img))
+        cv2.putText(image, f"frame={i}", (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
 
         output_dir_2D = output_dir + 'pose2D/'
         os.makedirs(output_dir_2D, exist_ok=True)
-        cv2.imwrite(output_dir_2D + str(('%04d' % i)) + '_2D.png', image)
+        cv2.imwrite(output_dir_2D + f"{i:04d}_2D.png", image)
 
         ## 3D
         fig = plt.figure(figsize=(9.6, 5.4))
@@ -509,6 +552,9 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
 
     print('Generating 3D pose successful!')
 
+    if not is_image:
+        cap.release()
+
     # --- Optional: save per-frame orientations for Colab ---
     if getattr(args, "estimate_orientation", False) and getattr(args, "orientation_save", None):
         out_path = Path(args.orientation_save)
@@ -541,6 +587,9 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
     image_2d_dir = sorted(glob.glob(os.path.join(output_dir_2D, '*.png')))
     image_3d_dir = sorted(glob.glob(os.path.join(output_dir_3D, '*.png')))
 
+    if POSE_DEBUG:
+        print(f"[COMPOSE.DBG] pose2D_frames={len(image_2d_dir)} pose3D_frames={len(image_3d_dir)}")
+
     print('\nGenerating demo...')
     for i in tqdm(range(len(image_2d_dir))):
         image_2d = plt.imread(image_2d_dir[i])
@@ -571,6 +620,12 @@ def get_pose3D(video_path, output_dir, is_image=False, args=None):
         plt.margins(0, 0)
         plt.savefig(output_dir_pose + str(('%04d' % i)) + '_pose.png', dpi=200, bbox_inches='tight')
         plt.clf()
+        plt.close(fig)
+        if (i % 50) == 0:
+            plt.close('all')  # just in case
+
+    if POSE_DEBUG:
+        print(f"[COMPOSE.DBG] wrote {len(image_2d_dir)} composite frames to {output_dir + 'pose/'}")
 
 
 if __name__ == "__main__":
@@ -680,3 +735,6 @@ if __name__ == "__main__":
         print('Folder processing complete!')
 
 
+
+#Command: image-dir, image, video
+# python demo/vis.py --video output_video.mp4 --gpu 0 --estimate-orientation --orientation-overlay --orientation-overlay-scale 1.0
