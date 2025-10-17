@@ -1,0 +1,69 @@
+Execution order (step-by-step)
+
+Add CLI + Log plumbing (no math yet)
+
+In vis.py: add --ros-log-file, --ros-publish, --ros-frame-id, --translation-source.
+
+Create the append-only logger (e.g., pose_log_append(...)) that writes to output_dir/pose_stamped.log.
+
+✅ Verify: running vis.py produces a pose_stamped.log file (even if entries are “SKIP:no_person” for now).
+
+Tap camera-frame pose (read-only)
+
+In the per-frame loop, get the camera-frame 3D joints (the skeleton before any camera_to_world).
+
+Do not change rendering or model outputs—just copy what you need.
+
+✅ Verify: you can print one frame’s min/max XYZ to console (temporary) to confirm you’re reading the right tensor.
+
+Compute torso orientation in camera frame
+
+Call your existing compute_torso_frame(...) on the camera-frame joints.
+
+Extract forward, compute yaw = atan2(forward_x, forward_z).
+
+Build a normalized quaternion from (roll=0, pitch=0, yaw).
+
+Add a confidence threshold; if low → mark SKIP in the log.
+
+✅ Verify: pose_stamped.log shows status=OK, yaw_deg changing sensibly on turning frames; quat_wxyz unit-length.
+
+Write full log entries (orientation-only, no position yet)
+
+For each valid frame: write frame_id, stamp (NA is fine), has_person, conf, yaw_deg/rad, quat_wxyz, pos=NA, translation_source=none, status=OK.
+
+For invalid frames: write SKIP:<reason>.
+
+✅ Verify on Windows: open pose_stamped.log, spot-check a few frames against your rendered video.
+
+(Optional later) Wire a metric translation source
+
+If/when you have one, pick exactly one:
+
+depth: back-project pelvis pixel with intrinsics → (X,Y,Z) in meters.
+
+multiview/external: convert world (X,Y,Z) to camera frame via world_to_camera(...).
+
+Only if translation is valid per frame, include pos_xyz_m=[x,y,z]; else SKIP:no_metric_translation.
+
+✅ Verify: pos_xyz_m finite, plausible; still no changes to rendering.
+
+(Optional later) Add demo/ros_bridge.py and publish when ROS exists
+
+Keep it off on Windows. On a ROS box, pass --ros-publish to also publish PoseStamped using the same values you logged.
+
+✅ Verify (teammate): replay via ROS/RViz; matches your log.
+
+(Optional) Provide a tiny log→ROS replayer for teammates
+
+Separate script that reads pose_stamped.log and publishes PoseStamped for RViz.
+
+✅ Verify: teammate can visualize without running your full pipeline.
+
+Why this order
+
+Steps 1–4 give you end-to-end verification on Windows with zero risk to your current pipeline.
+
+Step 5 attaches position only when you have a real metric source (no hacks).
+
+Steps 6–7 let others validate in ROS/RViz using the exact same data.
